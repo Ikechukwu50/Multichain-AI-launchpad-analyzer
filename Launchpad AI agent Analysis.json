@@ -1,0 +1,416 @@
+{
+  "name": "Launchpad AI agent Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "f9811003-529a-473f-b19f-f7f441042ca1",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2208,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Each chain gets its OWN DexScreener search URL\n// Using /dex/search to find latest tokens per chain\nreturn [\n  {\n    json: {\n      chain: 'ethereum',\n      chainId: '1',\n      goplusChainId: '1',\n      explorerKey: 'UR93BU1IYNAYCW2H825UP1X9UAQTBS6J1I',\n      minLiquidity: 500,\n      dexSearchUrl: 'https://api.dexscreener.com/latest/dex/search?q=ethereum'\n    }\n  },\n  {\n    json: {\n      chain: 'bsc',\n      chainId: '56',\n      goplusChainId: '56',\n      explorerKey: 'UR93BU1IYNAYCW2H825UP1X9UAQTBS6J1I',\n      minLiquidity: 300,\n      dexSearchUrl: 'https://api.dexscreener.com/latest/dex/search?q=bsc'\n    }\n  },\n  {\n    json: {\n      chain: 'solana',\n      chainId: 'solana',\n      goplusChainId: 'solana',\n      explorerKey: 'none',\n      minLiquidity: 200,\n      dexSearchUrl: 'https://api.dexscreener.com/latest/dex/search?q=solana'\n    }\n  }\n];"
+      },
+      "id": "bcab5478-7745-4dd3-903a-eadf50962d54",
+      "name": "Chain Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1984,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the DexScreener URL from the chain config item\n// Keeps the expression OUT of the HTTP node to avoid rendering bugs\nconst cfg = $input.item.json;\nreturn [{ json: { ...cfg, fetchUrl: cfg.dexSearchUrl } }];"
+      },
+      "id": "d7f29d9b-9047-4e7d-a4e6-35e8c0389e41",
+      "name": "Build Dex URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1760,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.fetchUrl }}",
+        "options": {}
+      },
+      "id": "b7e2a7a0-a91a-4972-9d6e-b1c4615e9519",
+      "name": "DexScreener Fetch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1536,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg   = $('Build Dex URL').item.json;\nconst chain = cfg.chain;\nconst minLiq = cfg.minLiquidity || 200;\n\nconst raw   = $input.item.json;\nconst pairs = raw.pairs || [];\n\nconst now = Date.now();\nconst threeDaysMs = 3 * 24 * 60 * 60 * 1000;\n\n// Map chain name to dexscreener chainId values\nconst chainAliases = {\n  ethereum: ['ethereum', 'eth'],\n  bsc:      ['bsc', 'bnb', 'binance', 'bsc_mainnet'],\n  solana:   ['solana', 'sol']\n};\nconst aliases = chainAliases[chain] || [chain];\n\nconst filtered = pairs\n  .filter(p => {\n    const pChain = (p.chainId || '').toLowerCase();\n    const liq    = p.liquidity?.usd || 0;\n    const age    = now - (p.pairCreatedAt || 0);\n    return aliases.includes(pChain) && liq >= minLiq && age < threeDaysMs;\n  })\n  .sort((a, b) => (b.pairCreatedAt || 0) - (a.pairCreatedAt || 0))\n  .slice(0, 3)\n  .map(p => ({\n    json: {\n      chain,\n      chainId:         cfg.chainId,\n      goplusChainId:   cfg.goplusChainId,\n      explorerKey:     cfg.explorerKey,\n      minLiquidity:    minLiq,\n      symbol:          p.baseToken?.symbol  || 'UNKNOWN',\n      name:            p.baseToken?.name    || 'Unknown Token',\n      contractAddress: p.baseToken?.address || '',\n      pairAddress:     p.pairAddress        || '',\n      dex:             p.dexId              || 'unknown',\n      priceUsd:        p.priceUsd           || '0',\n      liquidity:       p.liquidity?.usd     || 0,\n      volume24h:       p.volume?.h24        || 0,\n      priceChange24h:  p.priceChange?.h24   || 0,\n      txns24h:         (p.txns?.h24?.buys || 0) + (p.txns?.h24?.sells || 0),\n      marketCap:       p.marketCap          || p.fdv || 0,\n      pairAgeMinutes:  Math.round((now - (p.pairCreatedAt || now)) / 60000)\n    }\n  }));\n\nif (filtered.length === 0) {\n  // Debug: show what chainIds came back so we can adjust\n  const sample = pairs.slice(0, 5).map(p => p.chainId);\n  return [{ json: { skip: true, chain, reason: 'No tokens found. Sample chainIds from API: ' + JSON.stringify(sample) } }];\n}\n\nreturn filtered;"
+      },
+      "id": "749fead2-be2c-47f4-81ba-9357f7d3c41d",
+      "name": "Filter By Chain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1312,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-001",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b0e0824c-e5bb-4b19-b0ba-5d8748880797",
+      "name": "Has Tokens?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1088,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build GoPlus URL safely in code — no expression issues\nconst t = $input.item.json;\nlet url;\nif (t.goplusChainId === 'solana') {\n  url = 'https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=' + encodeURIComponent(t.contractAddress);\n} else {\n  url = 'https://api.gopluslabs.io/api/v1/token_security/' + t.goplusChainId + '?contract_addresses=' + encodeURIComponent(t.contractAddress);\n}\nreturn [{ json: { ...t, goplusFetchUrl: url } }];"
+      },
+      "id": "386920ae-73c0-4e05-8eeb-7d360e046637",
+      "name": "Build GoPlus URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.goplusFetchUrl }}",
+        "options": {}
+      },
+      "id": "42595f10-bb05-45e6-99cc-b909e39ef2a9",
+      "name": "GoPlus Security Scan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -640,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const token  = $('Build GoPlus URL').item.json;\nconst raw    = $input.item.json;\n\nconst gpResult = raw?.result || {};\nconst gpData   = typeof gpResult === 'object'\n  ? (Object.values(gpResult)[0] || {})\n  : {};\n\nconst top10 = (gpData.holders || [])\n  .slice(0, 10)\n  .reduce((s, h) => s + parseFloat(h.percent || 0), 0)\n  .toFixed(2);\n\nreturn [{ json: {\n  ...token,\n  is_honeypot:             gpData.is_honeypot             || '0',\n  buy_tax:                 gpData.buy_tax                 || '0',\n  sell_tax:                gpData.sell_tax                || '0',\n  is_mintable:             gpData.is_mintable             || '0',\n  can_take_back_ownership: gpData.can_take_back_ownership || '0',\n  hidden_owner:            gpData.hidden_owner            || '0',\n  is_blacklisted:          gpData.is_blacklisted          || '0',\n  is_proxy:                gpData.is_proxy                || '0',\n  lp_locked:               gpData.lp_holder_analysis?.[0]?.is_locked || '0',\n  holder_count:            gpData.holder_count            || '0',\n  top10_holder_ratio:      top10,\n  sol_mintable:            gpData.mintable                || false,\n  sol_freeze_authority:    gpData.freezeable              || false\n}}];"
+      },
+      "id": "09f8a490-4c24-4ec5-99b9-fb2e660224fe",
+      "name": "Merge Security Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "9f2c780f-f8f7-4605-915d-63049974bca4",
+      "name": "Gemini AI Analysis",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        320
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "mxOD2IbUdIuYy7wy",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const inp = $input.item.json;\nlet raw = inp.text || inp.output || inp.content || '';\nif (!raw && inp.generations) raw = inp.generations?.[0]?.[0]?.text || '';\nif (!raw) raw = JSON.stringify(inp);\n\nraw = raw.replace(/```json/gi, '').replace(/```/gi, '').trim();\nconst m = raw.match(/\\{[\\s\\S]*\\}/);\nraw = m ? m[0] : raw;\n\nlet ai;\ntry { ai = JSON.parse(raw); }\ncatch(e) {\n  ai = {\n    chain: 'unknown', token: 'UNKNOWN', contract: '',\n    scores: { tokenomics: 50, contract: 50, sentiment: 50, liquidity: 50, overall: 50 },\n    verdict: 'CAUTION',\n    flags: ['AI parse error - review manually'],\n    summary: 'Could not parse AI response.',\n    recommendation: 'MONITOR'\n  };\n}\n\nconst t = $('Merge Security Data').item.json;\nconst chainMod = { ethereum: 5, bsc: -5, solana: -3 }[t.chain] || 0;\n\nlet cs = ai.scores?.contract ?? 50;\nif (t.is_honeypot === '1')               cs -= 50;\nif (parseFloat(t.buy_tax)  > 10)         cs -= 20;\nif (parseFloat(t.sell_tax) > 10)         cs -= 20;\nif (t.can_take_back_ownership === '1')   cs -= 15;\nif (t.hidden_owner === '1')              cs -= 15;\nif (t.is_mintable === '1')               cs -= 20;\nif (t.is_proxy === '1')                  cs -= 10;\nif (t.chain === 'solana' && t.sol_mintable)          cs -= 25;\nif (t.chain === 'solana' && t.sol_freeze_authority)  cs -= 15;\ncs = Math.max(0, cs);\n\nlet ls = ai.scores?.liquidity ?? 50;\nif (t.liquidity < t.minLiquidity) ls -= 25;\nif (t.lp_locked === '1')          ls += 15;\nconst vmr = t.marketCap > 0 ? t.volume24h / t.marketCap : 0;\nif (vmr > 2) ls -= 10;\nls = Math.max(0, Math.min(100, ls));\n\nconst rawScore = Math.round(\n  (ai.scores?.tokenomics ?? 50) * 0.25 +\n   cs                           * 0.35 +\n  (ai.scores?.sentiment  ?? 50) * 0.15 +\n   ls                           * 0.25\n);\nconst overall = Math.max(0, Math.min(100, rawScore + chainMod));\n\nconst verdict    = overall >= 70 ? 'SAFE' : overall >= 50 ? 'CAUTION' : 'DANGER';\nconst vEmoji     = { SAFE: '✅', CAUTION: '⚡', DANGER: '🚨' }[verdict];\nconst chainLabel = { ethereum: '⬡ ETH', bsc: '◈ BSC', solana: '◎ SOL' }[t.chain] || t.chain.toUpperCase();\nconst rec        = overall >= 70 ? 'BUY_WATCH' : overall >= 50 ? 'MONITOR' : 'AVOID';\nconst flags      = (ai.flags || []).slice(0, 6);\nconst flagLines  = flags.length ? flags.map(f => '⚠️ ' + f).join('\\n') : '✅ No critical flags';\n\nconst tgMsg =\n  '🔔 <b>' + chainLabel + ' — NEW TOKEN</b>\\n' +\n  '━━━━━━━━━━━━━━━━━━\\n' +\n  '<b>Token:</b> $' + (ai.token || t.symbol) + '\\n' +\n  '<b>Contract:</b> <code>' + t.contractAddress + '</code>\\n' +\n  '<b>DEX:</b> ' + t.dex + ' · Age: ' + t.pairAgeMinutes + 'm\\n\\n' +\n  '📊 <b>SCORES</b>\\n' +\n  'Tokenomics : ' + (ai.scores?.tokenomics ?? 50) + '/100\\n' +\n  'Contract   : ' + cs + '/100\\n' +\n  'Sentiment  : ' + (ai.scores?.sentiment ?? 50) + '/100\\n' +\n  'Liquidity  : ' + ls + '/100\\n\\n' +\n  '💰 <b>MARKET</b>\\n' +\n  'Liquidity  : $' + Number(t.liquidity).toLocaleString() + '\\n' +\n  'Volume 24h : $' + Number(t.volume24h).toLocaleString() + '\\n' +\n  'LP Locked  : ' + (t.lp_locked === '1' ? '✅ YES' : '❌ NO') + '\\n' +\n  'Honeypot   : ' + (t.is_honeypot === '1' ? '🚨 YES' : '✅ NO') + '\\n' +\n  'Tax B/S    : ' + t.buy_tax + '% / ' + t.sell_tax + '%\\n\\n' +\n  '🚩 <b>FLAGS</b>\\n' + flagLines + '\\n\\n' +\n  '📝 ' + (ai.summary || '') + '\\n\\n' +\n  vEmoji + ' <b>VERDICT: ' + verdict + ' · ' + overall + '/100</b>\\n' +\n  '<b>ACTION: ' + rec + '</b>';\n\nreturn [{ json: {\n  chain: t.chain,\n  symbol: ai.token || t.symbol,\n  contractAddress: t.contractAddress,\n  overall, verdict, recommendation: rec,\n  scores: { tokenomics: ai.scores?.tokenomics ?? 50, contract: cs, sentiment: ai.scores?.sentiment ?? 50, liquidity: ls, overall },\n  flags, summary: ai.summary || '',\n  telegramMsg: tgMsg,\n  liquidity: t.liquidity,\n  volume24h: t.volume24h,\n  marketCap: t.marketCap,\n  is_honeypot: t.is_honeypot,\n  buy_tax: t.buy_tax,\n  sell_tax: t.sell_tax,\n  lp_locked: t.lp_locked,\n  pairAgeMinutes: t.pairAgeMinutes,\n  analyzedAt: new Date().toISOString()\n}}];"
+      },
+      "id": "a402de8d-13ea-48eb-ba9c-d6c7c5fbbd2f",
+      "name": "Score Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegramMsg }}",
+        "additionalFields": {
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "2aec9da0-1130-413a-8200-8f2c70dd682c",
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        384,
+        0
+      ],
+      "webhookId": "049c4fb1-1725-412d-997f-79e847c642cf"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Analyzer Log",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.analyzedAt }}",
+            "Chain": "={{ $json.chain }}",
+            "Symbol": "={{ $json.symbol }}",
+            "Contract": "={{ $json.contractAddress }}",
+            "Overall Score": "={{ $json.overall }}",
+            "Verdict": "={{ $json.verdict }}",
+            "Recommendation": "={{ $json.recommendation }}",
+            "Tokenomics Score": "={{ $json.scores.tokenomics }}",
+            "Contract Score": "={{ $json.scores.contract }}",
+            "Sentiment Score": "={{ $json.scores.sentiment }}",
+            "Liquidity Score": "={{ $json.scores.liquidity }}",
+            "Liquidity USD": "={{ $json.liquidity }}",
+            "Volume 24h": "={{ $json.volume24h }}",
+            "Market Cap": "={{ $json.marketCap }}",
+            "Is Honeypot": "={{ $json.is_honeypot }}",
+            "Buy Tax": "={{ $json.buy_tax }}",
+            "Sell Tax": "={{ $json.sell_tax }}",
+            "LP Locked": "={{ $json.lp_locked }}",
+            "Pair Age (min)": "={{ $json.pairAgeMinutes }}",
+            "Flags": "={{ $json.flags.join(', ') }}",
+            "Summary": "={{ $json.summary }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "17ee02dd-a414-417b-9bdf-5794eee972e8",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        384,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -192,
+        96
+      ],
+      "id": "0a4323e7-f8f3-46df-9b78-860f25f67ba1",
+      "name": "Basic LLM Chain"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Chain Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chain Config": {
+      "main": [
+        [
+          {
+            "node": "Build Dex URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Dex URL": {
+      "main": [
+        [
+          {
+            "node": "DexScreener Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DexScreener Fetch": {
+      "main": [
+        [
+          {
+            "node": "Filter By Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter By Chain": {
+      "main": [
+        [
+          {
+            "node": "Has Tokens?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Tokens?": {
+      "main": [
+        [
+          {
+            "node": "Build GoPlus URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build GoPlus URL": {
+      "main": [
+        [
+          {
+            "node": "GoPlus Security Scan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GoPlus Security Scan": {
+      "main": [
+        [
+          {
+            "node": "Merge Security Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Engine": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Security Data": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini AI Analysis": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Score Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c025ad75-b454-4568-8697-b96f92481516",
+  "meta": {
+    "instanceId": "5bf5f63beeb31621c2e06be4b139a744c9521f9761cf329a1f568302c6e44b5e"
+  },
+  "id": "u6CllWQI79PTRWYE",
+  "tags": []
+}
